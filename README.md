@@ -1,167 +1,123 @@
-# Technical Assessment: Event Timeline Reconstruction Engine
+# Event Timeline Reconstruction Engine
 
-**Track:** Python / Data Engineering / Problem Solving Internship  
-**Level:** Medium | **Suggested time:** 4-6 hours | **Language:** Python 3.10+  
-**Data:** Large, intentionally messy, fully synthetic e-commerce event logs. No customer data is included.
+A command-line Python tool that reconstructs e-commerce order timelines from a
+messy order-event CSV. It normalizes and validates records, resolves duplicated
+and conflicting event IDs, replays each order through a fixed business state
+machine, and writes a per-order summary plus an anomaly report. The goal is
+correctness, deterministic output, and transparent reasoning — not dashboards or
+heavy architecture.
 
-## 1. Context
+## Requirements and setup
 
-An online store receives order events from independent systems (web, payment gateway, warehouse, courier, and returns). Event rows are not necessarily stored in the order they actually occurred. Some were replayed, some contain inconsistent information, and some are malformed.
+- Python 3.10 or newer.
+- Standard library only: no third-party packages, no `requirements.txt`, and no
+  installation step.
+- No network access, API keys, or external services are used.
 
-Build a Python program that reconstructs a defensible order timeline and flags problems. The goal is **correctness, transparent reasoning, robust Python, and good testing**, not a dashboard, ML model, or a complicated architecture.
-
-## 2. Files supplied
-
-- `data/order_events.csv`: **main dataset (~181,000 rows / ~30,000 orders)**. Use this for development and final execution.
-- `data/debug_subset.csv`: smaller subset for faster development; the main data is authoritative.
-- `data/worked_example_input.csv`: short hand-checkable example.
-- `data/worked_example_summary.csv`: exact expected summary for the short example.
-- `data/worked_example_anomalies.csv`: exact expected anomaly report for the short example.
-- `data/DATA_DICTIONARY.md`: details of all input fields and validation conventions.
-
-## 3. Your task
-
-Implement an executable CLI that:
-
-1. Loads an arbitrary CSV with the specified input schema.
-2. Normalizes and validates records according to the exact rules below.
-3. Identifies duplicate event IDs and conflicting reuses of an event ID.
-4. Reconstructs each order's timeline from **event_time** (not row order or received_at).
-5. Applies the supplied business transition rules; ignores invalid state changes.
-6. Exports one per-order summary and one anomaly report.
-7. Handles missing/invalid fields without crashing or fabricating information.
-
-## 4. Required command and deliverables
-
-Your submission **must** support:
+## Usage
 
 ```bash
 python main.py --input data/order_events.csv --output-dir output
 ```
 
-It must create:
+`--input` may point at any CSV that matches the input schema; the program needs no
+code changes or retraining to process a different file. Both options are required.
 
-- `output/order_summary.csv`
-- `output/anomalies.csv`
+## Outputs
 
-It must also work with another CSV passed via `--input` without code changes, retraining, or external services. CSV row ordering may differ between runs.
+Both files are always written (headers only when there is no data).
 
-### `order_summary.csv` - required columns
+`order_summary.csv` — one row per distinct nonempty `order_id`:
 
-```csv
+```text
 order_id,final_status,valid_events,anomaly_count,first_valid_event_time,last_valid_event_time
 ```
 
-- **One row for each distinct nonempty order_id appearing anywhere in the input**, including records that are rejected.
-- `final_status`: last accepted state, or `UNKNOWN` if no event was accepted.
-- `valid_events`: number of accepted transitions (count `PLACED` as one).
-- `anomaly_count`: number of rows in `anomalies.csv` attributed to this order.
-- `first_valid_event_time` / `last_valid_event_time`: UTC `YYYY-MM-DDTHH:MM:SSZ`, or empty if no event was accepted.
-- Sort output by `order_id` ascending. Numbers must be integers.
+`final_status` is the last accepted state or `UNKNOWN` when no event was accepted;
+`valid_events` counts accepted transitions (including `PLACED`); `anomaly_count`
+is the number of anomaly rows attributed to the order; the timestamps are UTC
+`YYYY-MM-DDTHH:MM:SSZ` or empty. Rows are sorted by `order_id`.
 
-### `anomalies.csv` - required columns
+`anomalies.csv` — one row per rejected input row (at most one per `row_id`):
 
-```csv
+```text
 row_id,order_id,event_id,anomaly_type,details
 ```
 
-- Include **one row for each rejected input row**, at most one anomaly per `row_id`.
-- The `details` column can be any clear human-readable explanation.
-- `order_id` and `event_id` should contain the normalized (trimmed) values; empty remains empty.
-- Sort output by `row_id` ascending.
-- **Allowed anomaly_type values, exactly:**
+`anomaly_type` is one of `DUPLICATE_EVENT`, `EVENT_ID_CONFLICT`,
+`MISSING_ORDER_ID`, `MISSING_EVENT_ID`, `MISSING_TIMESTAMP`, `INVALID_TIMESTAMP`,
+`UNKNOWN_EVENT`, `INVALID_TRANSITION`. Rows are sorted by `row_id`.
 
-`DUPLICATE_EVENT`, `EVENT_ID_CONFLICT`, `MISSING_ORDER_ID`, `MISSING_EVENT_ID`, `MISSING_TIMESTAMP`, `INVALID_TIMESTAMP`, `UNKNOWN_EVENT`, `INVALID_TRANSITION`.
+## Design decisions
 
-## 5. Input normalization and event identity
+- **Normalization.** Every cell is trimmed; empty/whitespace-only cells are
+  missing. `event_type` is trimmed and uppercased only (no aliases); `event_id`
+  and `order_id` are case-sensitive strings after trimming. `received_at`,
+  `source_system`, and `metadata` are informational and never affect identity,
+  ordering, or transitions.
+- **Duplicate / conflict resolution (before validation).** Repeated nonempty
+  `event_id` values are grouped; the canonical row is the one with the
+  lexicographically smallest trimmed `row_id`, which stays deterministic if the
+  file is shuffled. Each other row is compared on
+  `(order_id, normalized event_type, raw event_time)`: equal becomes
+  `DUPLICATE_EVENT`, different becomes `EVENT_ID_CONFLICT`. Both are rejected
+  before validation. Rows with an empty `event_id` are never grouped.
+- **Validation precedence.** Only the first applicable problem is recorded, in
+  this order: `MISSING_ORDER_ID`, `MISSING_EVENT_ID`, `MISSING_TIMESTAMP`,
+  `INVALID_TIMESTAMP`, `UNKNOWN_EVENT`.
+- **Timestamps.** Only three full-second UTC forms are accepted
+  (`...Z`, `YYYY-MM-DD HH:MM:SS`, `...+00:00`), each checked by an exact pattern
+  and then by real calendar/time validation. Unzoned values are treated as UTC
+  and all output is normalized to `...Z`.
+- **Chronological replay.** Eligible rows are grouped by `order_id` and sorted by
+  `(event_time, event_id, row_id)`. Each order is replayed from `START`; an
+  illegal step records `INVALID_TRANSITION`, leaves the state unchanged, and
+  evaluation continues. History is never repaired or synthesized.
+- **Determinism.** Output is invariant under row permutation: canonical
+  selection, tie-breaks, and output ordering are all explicit, and maps are never
+  relied on for output order.
+- **Input integrity.** A missing/unreadable file, malformed CSV, missing required
+  columns, invalid UTF-8, or an empty/duplicated `row_id` fails fast with a clear
+  message and a nonzero exit rather than inventing data.
 
-- Trim surrounding whitespace from every input value. Empty or whitespace-only cells are missing.
-- Normalize `event_type` by stripping whitespace and converting to uppercase. **Do not** invent aliases or change underscores.
-- Treat `event_id` and `order_id` as **case-sensitive** strings after trimming.
-- `row_id` is unique and nonmissing. It represents a source ingestion-row identifier. **It is not event time.**
-- For repeated nonempty `event_id`, choose the row with the **lexicographically smallest `row_id` as the canonical row**. This remains deterministic if the CSV is shuffled.
-- For every other row with the same `event_id`, compare its `(order_id, normalized event_type, raw event_time after trimming)` tuple with the canonical row:
-  - equal tuple -> `DUPLICATE_EVENT`;
-  - different tuple -> `EVENT_ID_CONFLICT`.
-- Both kinds of noncanonical rows are rejected before validation or timeline reconstruction.
-- Any row with missing `event_id` is **not** grouped with other missing IDs.
-- Other columns (`received_at`, `source_system`, `metadata`) are context only. They do not decide identity, chronological ordering, or transitions.
+## Tests
 
-## 6. Validation precedence for canonical rows
+```bash
+python -m unittest discover -s tests -v
+```
 
-Check the canonical row in this exact order, emitting **only the first applicable error**:
+34 unit tests cover canonical duplicate/conflict selection, validation
+precedence and missing/unknown values, strict timestamp acceptance and rejection,
+chronological ordering and tie-breaks, transition validity and terminal states,
+anomaly/summary accounting, permutation invariance, worked-example fixture
+matching, and CLI error handling.
 
-1. Empty `order_id` -> `MISSING_ORDER_ID`.
-2. Empty `event_id` -> `MISSING_EVENT_ID`.
-3. Empty `event_time` -> `MISSING_TIMESTAMP`.
-4. Unparseable `event_time` -> `INVALID_TIMESTAMP`.
-5. `event_type` is not in the supplied vocabulary -> `UNKNOWN_EVENT`.
-6. If none of the above apply, the event is eligible for timeline reconstruction.
+## Complexity and performance
 
-**Supported event_time representations (all UTC):**
+Processing is dominated by per-order sorting: worst-case `O(N log N)` time and
+`O(N)` memory in the number of input rows, using a single normalization pass plus
+one sort per order. On one local Windows run with Python 3.12.6, the full supplied
+dataset (181,775 records / 30,840 orders) completed in about 3.0 seconds. That
+figure is a single observed measurement, not a benchmark or a guarantee; runtime
+varies with hardware, storage, and input composition.
 
-- `2026-04-03T09:00:00Z`
-- `2026-04-03 09:00:00`
-- `2026-04-03T09:00:00+00:00`
+## Limitations
 
-Reject impossible dates/times. A timestamp without a timezone is **UTC**. Convert accepted timestamps to UTC for ordering and output. Seconds precision is sufficient.
+- **Strict timestamp acceptance.** Only the three full-second UTC forms are
+  accepted; fractional seconds, offsets other than `+00:00`, non-padded fields,
+  and impossible dates/times are rejected rather than coerced.
+- **Whole-input memory use.** Rows are held in memory; the approach is sized for
+  the supplied ~181k-row dataset, not unbounded streams.
+- **`row_id` integrity is fatal.** Empty or duplicated `row_id` values abort the
+  run as malformed input instead of producing an anomaly, preserving one anomaly
+  per `row_id` and unambiguous accounting.
+- Anomaly `details` text is deterministic but human-readable; only the stable
+  fields should be treated as machine contracts.
 
-## 7. Business state machine
+## Tooling disclosure
 
-The following are the **only** valid next statuses. A transition into an identical status is not valid unless listed (none are).
-
-| Current state | Allowed next event_type |
-|---|---|
-| `START` (before any valid event) | `PLACED` |
-| `PLACED` | `PAID`, `CANCELLED` |
-| `PAID` | `PACKED`, `CANCELLED` |
-| `PACKED` | `SHIPPED`, `CANCELLED` |
-| `SHIPPED` | `OUT_FOR_DELIVERY` |
-| `OUT_FOR_DELIVERY` | `DELIVERED` |
-| `DELIVERED` | `RETURN_REQUESTED` |
-| `RETURN_REQUESTED` | `RETURNED` |
-| `RETURNED` | `REFUNDED` |
-| `CANCELLED` | none |
-| `REFUNDED` | none |
-
-**Chronological processing:** group eligible rows by trimmed `order_id`; sort by (parsed `event_time`, trimmed `event_id`, `row_id`) ascending. Evaluate events sequentially from `START`.
-
-If a proposed transition is not allowed, report `INVALID_TRANSITION`, do **not** update the current state, and keep evaluating subsequent events. Do not infer missing intermediate events. A valid prefix of a timeline still counts even if later events are invalid.
-
-## 8. Anomaly accounting
-
-Duplicate/conflict checks are performed **before** single-row validation, and single-row validation occurs **before** state-transition checks. Each rejected `row_id` appears once only.
-
-A rejected row with a nonempty `order_id` is counted toward that order's `anomaly_count`, even if it never entered the state machine. Rows with empty `order_id` appear in `anomalies.csv` but do **not** contribute to any order's `anomaly_count`.
-
-Every **nonempty** `order_id` appearing in any input row gets an order summary, including an order appearing only in a rejected conflict row. Use `UNKNOWN` if it has no accepted event.
-
-## 9. Example and tricky cases
-
-The worked example intentionally includes unordered rows, a duplicated event ID, an event-ID conflict, cancellation followed by delivery, invalid timestamps, missing IDs, and unknown event types.
-
-Read its three files together. Your program's output on `worked_example_input.csv` should match the supplied two expected CSVs (ignoring the free-text details description).
-
-**Important:** `received_at` can be much later than `event_time`. It is not the ordering key. Having an event with an earlier row position does not make it canonical if the event IDs differ; only conflicting rows sharing one `event_id` use the `row_id` canonical rule.
-
-## 10. Technical constraints and acceptable approaches
-
-- Python 3.10+, standard library or free open-source packages (e.g. pandas) are acceptable.
-- No external network calls, private data, API keys, paid APIs, or ML model are needed.
-- A command should finish on the full provided dataset on a typical laptop without manual modifications.
-- Output must be deterministic across reruns and changes to input CSV row ordering.
-- AI coding assistants are allowed. You must understand and explain your solution; disclose significant tools or packages used in the README.
-- Do not use the worked example answers as a hardcoded lookup. Your logic must work with the large data and other input orders.
-
-## 11. Submission checklist
-
-Submit a **single ZIP or Git repository** with:
-
-- `main.py` (plus any supporting Python modules), supporting the required CLI.
-- `requirements.txt` only if you use external packages.
-- A `README.md` containing setup, commands, design decisions, complexity considerations, and limitations.
-- **At least 5 meaningful unit tests** (duplicates, time ordering, invalid transitions, missing/unknown values, deterministic ties/reproducibility).
-- `output/order_summary.csv` and `output/anomalies.csv`, generated on the complete supplied main dataset.
-- A short **analysis note (maximum 1 page)** with: total orders, event and anomaly counts, 2-3 interesting edge cases you found, and one engineering tradeoff.
-
-Don't include the large original input CSV in your submission unless explicitly requested.
+OpenCode Desktop with the GLM-5.3-Flash model was used as an AI coding assistant
+during development (implementation support, test drafting, and documentation
+review). The runtime uses only Python's standard library and does not call,
+embed, or otherwise require OpenCode, GLM, any other AI model, or any external
+service.
