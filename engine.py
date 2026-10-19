@@ -80,9 +80,9 @@ ANOMALY_HEADER: tuple[str, ...] = (
 # first by an exact full-string pattern and then by strptime for real calendar
 # and wall-clock validity (rejects 2026-02-30, 24:00:00, leap seconds, ...).
 _TIMESTAMP_FORMATS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"), "%Y-%m-%dT%H:%M:%SZ"),
-    (re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"), "%Y-%m-%d %H:%M:%S"),
-    (re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00"), "%Y-%m-%dT%H:%M:%S+00:00"),
+    (re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"), "%Y-%m-%dT%H:%M:%SZ"),
+    (re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}"), "%Y-%m-%d %H:%M:%S"),
+    (re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+00:00"), "%Y-%m-%dT%H:%M:%S+00:00"),
 )
 
 

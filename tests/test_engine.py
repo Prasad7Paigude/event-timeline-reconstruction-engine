@@ -271,17 +271,18 @@ class TimestampTests(PipelineTestCase):
             with self.subTest(name=name):
                 self.assertIsNone(engine.parse_timestamp(text))
 
-    # T4 (known deviation — see stage report)
-    @unittest.expectedFailure
-    def test_T4_known_deviation_rejects_non_ascii_numerals(self):
-        # The prescribed format uses conventional ASCII decimal digits. The
-        # current engine accepts alternate Unicode decimal digits because both
-        # ``\d`` and ``strptime``/``int`` accept them. Expected to fail until a
-        # strictness fix is authorized.
+    # T4
+    def test_T4_rejects_non_ascii_numerals(self):
+        # The prescribed format uses conventional ASCII decimal digits; Unicode
+        # decimal digits (fullwidth, Arabic-Indic) must not be accepted.
         fullwidth = "\uFF12\uFF10\uFF12\uFF16-04-03T09:00:00Z"  # ２０２６
         arabic_indic = "\u0662\u0660\u0662\u0666-04-03T09:00:00Z"  # ٢٠٢٦
         self.assertIsNone(engine.parse_timestamp(fullwidth))
         self.assertIsNone(engine.parse_timestamp(arabic_indic))
+        # Control: the same date expressed in ASCII digits remains accepted.
+        control = engine.parse_timestamp("2026-04-03T09:00:00Z")
+        self.assertIsNotNone(control)
+        self.assertEqual(engine.format_timestamp(control), "2026-04-03T09:00:00Z")
 
     # T4
     def test_T4_no_received_at_fallback(self):
