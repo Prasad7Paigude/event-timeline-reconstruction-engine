@@ -166,7 +166,7 @@ def load_rows(input_path: str | Path) -> list[Row]:
     seen_row_ids: set[str] = set()
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
-            reader = csv.reader(handle)
+            reader = csv.reader(handle, strict=True)
             try:
                 raw_header = next(reader)
             except StopIteration:
@@ -207,6 +207,10 @@ def load_rows(input_path: str | Path) -> list[Row]:
                         event_time=_cell(values, idx_time),
                     )
                 )
+    except UnicodeDecodeError as exc:
+        raise EngineError(
+            f"Input file {input_path!r} is not valid UTF-8: {exc}"
+        ) from exc
     except OSError as exc:
         raise EngineError(f"Cannot read input file {input_path!r}: {exc}") from exc
     except csv.Error as exc:
