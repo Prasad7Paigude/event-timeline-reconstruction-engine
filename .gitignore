@@ -1,0 +1,7 @@
+# Local-only main dataset: large (21 MB) and never meant for version control.
+# Kept on disk for local runs; excluded from history.
+data/order_events.csv
+
+# Python bytecode / cache
+__pycache__/
+*.pyc
